@@ -39,7 +39,8 @@ fn run_projects_list(cli: &Cli, args: &ProjectsListArgs) -> Result<(), String> {
         return Err(format!("--limit must be between 1 and {MAX_PROJECT_LIMIT}"));
     }
 
-    let catalog = load_project_catalog_for_cli(cli)?;
+    let catalog =
+        load_project_catalog_for_cli(cli, args.work_dir.as_deref(), args.config.as_deref())?;
     let output = catalog.list(args.query.as_deref(), args.limit);
     if args.json {
         let output = CliProjectListOutput {

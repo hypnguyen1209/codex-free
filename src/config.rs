@@ -39,7 +39,7 @@ pub struct Cli {
     pub command: Option<CliCommand>,
 
     /// Project directory for serving, or the access root for multi-project and catalogue modes.
-    #[arg(long = "work-dir", required = true, global = true)]
+    #[arg(long = "work-dir", required = true)]
     pub work_dir: Option<String>,
 
     /// Let each ChatGPT conversation bind once to a project below --work-dir.
@@ -64,7 +64,7 @@ pub struct Cli {
     pub api_key: Option<String>,
 
     /// Config file path. Default: ./codex.config.json (tolerated if missing).
-    #[arg(long, global = true)]
+    #[arg(long)]
     pub config: Option<String>,
 
     /// Require Codex CLI-backed MCP discovery. Without this flag, the CLI is
@@ -108,6 +108,14 @@ pub enum ProjectsCommand {
 
 #[derive(Args, Debug)]
 pub struct ProjectsListArgs {
+    /// Project access root. This form is accepted after `projects list`.
+    #[arg(long = "work-dir")]
+    pub work_dir: Option<String>,
+
+    /// Config file path. Default: ./codex.config.json (tolerated if missing).
+    #[arg(long)]
+    pub config: Option<String>,
+
     /// Case-insensitive filter over names, aliases, descriptions, and selectors.
     #[arg(long)]
     pub query: Option<String>,
@@ -679,10 +687,8 @@ fn resolve_work_dir(raw: &str) -> PathBuf {
     }
 }
 
-fn resolve_cli_work_dir(cli: &Cli) -> Result<PathBuf, String> {
-    let raw = cli
-        .work_dir
-        .as_deref()
+fn resolve_work_dir_input(raw: Option<&str>) -> Result<PathBuf, String> {
+    let raw = raw
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "missing required --work-dir".to_string())?;
@@ -697,15 +703,23 @@ fn resolve_cli_work_dir(cli: &Cli) -> Result<PathBuf, String> {
     }
 }
 
-fn config_file_path(cli: &Cli) -> PathBuf {
-    cli.config
-        .as_deref()
+fn resolve_cli_work_dir(cli: &Cli) -> Result<PathBuf, String> {
+    resolve_work_dir_input(cli.work_dir.as_deref())
+}
+
+fn config_file_path(cli: &Cli, config_override: Option<&str>) -> PathBuf {
+    config_override
+        .or(cli.config.as_deref())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("codex.config.json"))
 }
 
-fn load_file_config(cli: &Cli, announce: bool) -> Result<FileConfig, String> {
-    let config_path = config_file_path(cli);
+fn load_file_config(
+    cli: &Cli,
+    config_override: Option<&str>,
+    announce: bool,
+) -> Result<FileConfig, String> {
+    let config_path = config_file_path(cli, config_override);
     let display_path = if config_path.is_absolute() {
         config_path.clone()
     } else {
@@ -827,7 +841,7 @@ pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
         return Err("cannot load server configuration for a CLI subcommand".into());
     }
     let work_dir = resolve_cli_work_dir(&cli)?;
-    let mut file = load_file_config(&cli, true)?;
+    let mut file = load_file_config(&cli, None, true)?;
 
     let mut tree = default_tree();
     if let Some(t) = file.tree.take() {
@@ -905,9 +919,13 @@ pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
     })
 }
 
-pub fn load_project_catalog_for_cli(cli: &Cli) -> Result<ProjectCatalog, String> {
-    let work_dir = resolve_cli_work_dir(cli)?;
-    let mut file = load_file_config(cli, false)?;
+pub fn load_project_catalog_for_cli(
+    cli: &Cli,
+    work_dir_override: Option<&str>,
+    config_override: Option<&str>,
+) -> Result<ProjectCatalog, String> {
+    let work_dir = resolve_work_dir_input(work_dir_override.or(cli.work_dir.as_deref()))?;
+    let mut file = load_file_config(cli, config_override, false)?;
     let project_catalog = resolve_project_catalog(&mut file);
     let codex_path = if project_catalog.codex_config.enabled {
         Some(codex_config_path()?)
@@ -1175,14 +1193,16 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(parsed.work_dir.as_deref(), Some("/tmp/projects"));
-        assert_eq!(parsed.config.as_deref(), Some("/tmp/config.json"));
+        assert!(parsed.work_dir.is_none());
+        assert!(parsed.config.is_none());
         let Some(CliCommand::Projects {
             command: ProjectsCommand::List(args),
         }) = parsed.command
         else {
             panic!("projects list subcommand was not parsed");
         };
+        assert_eq!(args.work_dir.as_deref(), Some("/tmp/projects"));
+        assert_eq!(args.config.as_deref(), Some("/tmp/config.json"));
         assert_eq!(args.query.as_deref(), Some("bridge"));
         assert!(args.json);
     }
@@ -1226,7 +1246,8 @@ mod tests {
         )
         .unwrap();
 
-        let catalog = load_project_catalog_for_cli(&cli(root.path(), &config_path)).unwrap();
+        let catalog =
+            load_project_catalog_for_cli(&cli(root.path(), &config_path), None, None).unwrap();
         assert_eq!(catalog.projects.len(), 1);
         assert_eq!(catalog.projects[0].selector, "project");
     }
