@@ -6,12 +6,14 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use serde::Deserialize;
 
 use std::collections::HashMap;
 
 use crate::codex_mcp::{codex_config_path, discover_codex_mcp_servers};
+use crate::openai_tunnel::validate_tunnel_id;
+use crate::quickstart::QuickstartArgs;
 use crate::types::{
     AppConfig, CommandConfig, ExecConfig, ExecMode, IgnoreConfig, McpServerSpec, MemoryConfig,
     OpenAiTunnelConfig, OutputConfig, ProjectDocConfig, SkillsConfig, TreeConfig,
@@ -20,12 +22,17 @@ use crate::types::{
 #[derive(Parser, Debug)]
 #[command(
     name = "codex-free",
-    about = "Codex Free MCP bridge (Rust): expose Codex-style agent tools over Streamable HTTP."
+    about = "Codex Free MCP bridge (Rust): expose Codex-style agent tools over Streamable HTTP.",
+    subcommand_negates_reqs = true,
+    args_conflicts_with_subcommands = true
 )]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<CliCommand>,
+
     /// Project directory, or the access root when --multi-project is enabled.
-    #[arg(long = "work-dir")]
-    pub work_dir: String,
+    #[arg(long = "work-dir", required = true)]
+    pub work_dir: Option<String>,
 
     /// Let each ChatGPT conversation bind once to a project below --work-dir.
     /// Other MCP clients fall back to transport-session binding.
@@ -59,6 +66,12 @@ pub struct Cli {
     /// Optional OpenAI organization id sent by tunnel-client.
     #[arg(long = "openai-tunnel-organization-id")]
     pub openai_tunnel_organization_id: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CliCommand {
+    /// Interactively configure a native OpenAI tunnel and ChatGPT connector.
+    Quickstart(QuickstartArgs),
 }
 
 fn default_allowed_commands() -> Vec<String> {
@@ -367,15 +380,6 @@ fn resolve_path(raw: &str) -> PathBuf {
     }
 }
 
-fn valid_tunnel_id(value: &str) -> bool {
-    value.strip_prefix("tunnel_").is_some_and(|suffix| {
-        suffix.len() == 32
-            && suffix
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-    })
-}
-
 fn valid_env_name(value: &str) -> bool {
     let mut chars = value.chars();
     matches!(chars.next(), Some(first) if first == '_' || first.is_ascii_alphabetic())
@@ -420,11 +424,7 @@ fn resolve_openai_tunnel(
         .clone()
         .or(file.tunnel_id)
         .ok_or_else(|| "openaiTunnel requires tunnelId (or --openai-tunnel-id)".to_string())?;
-    if !valid_tunnel_id(&tunnel_id) {
-        return Err(
-            "OpenAI tunnel id must be tunnel_ followed by 32 lowercase letters or digits".into(),
-        );
-    }
+    validate_tunnel_id(&tunnel_id).map_err(|error| error.to_string())?;
 
     let api_key_ref = resolve_api_key_ref(
         cli.openai_tunnel_api_key_ref
@@ -461,7 +461,14 @@ fn resolve_openai_tunnel(
 /// Load and merge config. Errors are returned as strings for the caller to
 /// print and exit on, mirroring the TS which validates and `process.exit`s.
 pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
-    let work_dir = resolve_work_dir(&cli.work_dir);
+    if cli.command.is_some() {
+        return Err("cannot load server configuration for a CLI subcommand".into());
+    }
+    let raw_work_dir = cli
+        .work_dir
+        .as_deref()
+        .ok_or_else(|| "--work-dir is required when starting the server".to_string())?;
+    let work_dir = resolve_work_dir(raw_work_dir);
 
     // Validate work-dir exists and is a directory.
     match std::fs::metadata(&work_dir) {
@@ -598,7 +605,8 @@ mod tests {
 
     fn cli(work_dir: &Path, config: &Path) -> Cli {
         Cli {
-            work_dir: work_dir.to_string_lossy().into_owned(),
+            command: None,
+            work_dir: Some(work_dir.to_string_lossy().into_owned()),
             multi_project: false,
             port: None,
             api_key: None,

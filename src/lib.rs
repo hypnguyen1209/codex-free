@@ -20,6 +20,7 @@ pub mod output_budget;
 pub mod process_env;
 pub mod project_bindings;
 pub mod project_doc;
+pub mod quickstart;
 pub mod registry;
 pub mod safe_path;
 pub mod server;

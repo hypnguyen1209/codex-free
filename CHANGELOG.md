@@ -6,6 +6,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Interactive `codex-free quickstart` onboarding for new installations. The
+  wizard selects the project scope, guides tunnel creation and ChatGPT developer
+  mode setup with direct links and concrete connector values, validates the
+  tunnel ID and hidden runtime key, preserves unrelated JSON configuration, and
+  stores the key in a dedicated per-tunnel file outside the project. On Unix, the
+  credential directory and file are restricted to the current user. The wizard
+  can start the normal supervised server immediately so ChatGPT can scan the live
+  tunnel.
+
 ## [1.2.0] - 2026-08-24
 
 ### Added
