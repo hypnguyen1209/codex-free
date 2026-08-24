@@ -38,6 +38,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `codex.config.json`, including bearer-token environment variables, static and
   environment-backed HTTP headers, startup timeouts, per-tool cancellable
   timeouts, the existing tool filters, and gateway mode.
+- Project-scoped review checkpoints with immutable project-open and incremental
+  last-review baselines. `show_changes` reports structured file statistics,
+  renames, binaries and a bounded complete patch, and can advance the incremental
+  baseline with compare-and-swap semantics.
+- A self-contained MCP Apps review resource linked from `show_changes`. Compatible
+  ChatGPT developer connectors render file summaries and patches interactively;
+  ordinary MCP clients continue to receive the same text and structured result.
 
 ### Fixed
 
@@ -56,6 +63,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in-flight request. Legacy SSE/WebSocket transports, literal Codex
   `bearer_token` values, mixed stdio/HTTP settings, and ambiguous duplicate
   Authorization configuration are rejected explicitly.
+- Review snapshots use a private temporary Git index and an explicit literal
+  pathspec for the selected project. They preserve the real index byte-for-byte, never
+  include sibling monorepo changes, return project-relative patch paths, and persist
+  only hashed conversation identifiers in the dedicated `refs/codex-free/review/`
+  namespace. Mutating calls and reviews for one conversation/project scope are
+  serialized through tool completion.
 
 ## [1.2.0] - 2026-08-24
 

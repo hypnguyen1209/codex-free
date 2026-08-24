@@ -60,7 +60,7 @@ impl ConversationIdentity {
         })
     }
 
-    fn key(&self) -> &str {
+    pub(crate) fn stable_key(&self) -> &str {
         &self.key
     }
 }
@@ -351,7 +351,7 @@ impl ProjectBindingStore {
 
     fn binding_path(&self, access_root: &Path, identity: &ConversationIdentity) -> PathBuf {
         self.access_root_dir(access_root)
-            .join(format!("{}.json", identity.key()))
+            .join(format!("{}.json", identity.stable_key()))
     }
 
     fn assignment_path(&self, access_root: &Path, source_project_root: &Path) -> PathBuf {

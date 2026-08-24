@@ -20,6 +20,7 @@ use crate::process_env::scrub_untrusted_child_env;
 use crate::project_bindings::{
     ConversationIdentity, ProjectBindingScope, ProjectRootSelection, resolve_project_root,
 };
+use crate::review::TransportReviewState;
 use crate::types::{AppConfig, PlanState, WorktreeMode};
 use crate::worktrees::create_managed_worktree;
 
@@ -516,6 +517,7 @@ pub struct SessionState {
     pub plan: Arc<StdMutex<Option<PlanState>>>,
     project_binding: Arc<StdMutex<Option<TransportProjectBinding>>>,
     project_selection_lock: Arc<TokioMutex<()>>,
+    review: TransportReviewState,
 }
 
 #[derive(Debug, Clone)]
@@ -534,6 +536,7 @@ impl Default for SessionState {
             plan: Arc::new(StdMutex::new(None)),
             project_binding: Arc::new(StdMutex::new(None)),
             project_selection_lock: Arc::new(TokioMutex::new(())),
+            review: TransportReviewState::new(),
         }
     }
 }
@@ -549,6 +552,7 @@ impl SessionState {
             plan: self.plan.clone(),
             project_binding: self.project_binding.clone(),
             project_selection_lock: self.project_selection_lock.clone(),
+            review: self.review.clone(),
         }
     }
 
@@ -678,6 +682,10 @@ impl SessionState {
             .unwrap()
             .as_ref()
             .map(|binding| binding.project_root.clone())
+    }
+
+    pub fn review_state(&self) -> TransportReviewState {
+        self.review.clone()
     }
 }
 
