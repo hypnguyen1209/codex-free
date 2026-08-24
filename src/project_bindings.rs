@@ -25,7 +25,7 @@ const LOCK_RETRY_MS: u64 = 50;
 
 static ATOMIC_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ConversationIdentity {
     key: String,
 }

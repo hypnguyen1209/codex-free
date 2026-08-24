@@ -2,10 +2,9 @@
 //! the axum wiring (`/mcp` Streamable HTTP, `/health`, CORS, bearer auth).
 //!
 //! Ports `src/server.ts`. rmcp's `StreamableHttpService` owns the transport and
-//! MCP session lifecycle: the service factory runs once per transport session,
-//! so a fresh [`SessionState`] owns resident exec processes and drops them when
-//! that session ends. ChatGPT project selection is stored separately by its
-//! stable conversation metadata and survives transport replacement.
+//! MCP session lifecycle. Generic clients keep resident commands in their
+//! transport [`SessionState`], while ChatGPT's stable conversation metadata
+//! selects server-owned command state that survives transport replacement.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::auth::{generate_internal_bearer_token, require_auth};
-use crate::exec_sessions::SessionState;
+use crate::exec_sessions::{ConversationExecSessionStore, SessionState};
 use crate::instructions::build_initial_instructions;
 use crate::openai_tunnel::TunnelHealth;
 use crate::project_bindings::{ConversationIdentity, ProjectBindingStore};
@@ -62,6 +61,7 @@ pub struct CodexHandler {
     config: Arc<AppConfig>,
     tools: Arc<Vec<Box<dyn Tool>>>,
     project_bindings: Arc<ProjectBindingStore>,
+    conversation_exec_sessions: Arc<ConversationExecSessionStore>,
     session: SessionState,
 }
 
@@ -135,6 +135,16 @@ impl ServerHandler for CodexHandler {
             return Ok(result.into());
         };
 
+        let conversation_exec_session = if tool.uses_exec_session_state() {
+            conversation.as_ref().map(|identity| {
+                self.conversation_exec_sessions
+                    .session_for(identity, &self.session)
+            })
+        } else {
+            None
+        };
+        let session = conversation_exec_session.as_ref().unwrap_or(&self.session);
+
         let mut result = if name == SetProjectRoot::NAME {
             if let Some(identity) = conversation.as_ref() {
                 select_and_render(&args, |path| async move {
@@ -144,7 +154,7 @@ impl ServerHandler for CodexHandler {
                 })
                 .await
             } else {
-                tool.call(args, &self.config, &self.session).await
+                tool.call(args, &self.config, session).await
             }
         } else {
             let effective_config = if tool.requires_project_root() {
@@ -152,7 +162,7 @@ impl ServerHandler for CodexHandler {
                     Some(identity) => self
                         .project_bindings
                         .effective_config(&self.config, identity),
-                    None => self.session.effective_config(&self.config),
+                    None => session.effective_config(&self.config),
                 };
                 match resolved {
                     Ok(config) => Some(config),
@@ -168,7 +178,7 @@ impl ServerHandler for CodexHandler {
             let call_config = effective_config
                 .as_ref()
                 .unwrap_or_else(|| self.config.as_ref());
-            tool.call(args, call_config, &self.session).await
+            tool.call(args, call_config, session).await
         };
 
         // Fill in the `structuredContent` the MCP spec expects from any tool that
@@ -225,6 +235,9 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
             Err(error) => tracing::warn!("managed-worktree cleanup skipped: {error}"),
         }
     }
+    let conversation_exec_sessions = Arc::new(ConversationExecSessionStore::new());
+    conversation_exec_sessions
+        .spawn_idle_reaper(Duration::from_millis(config.exec.idle_timeout_ms));
     let config = Arc::new(config);
 
     // Connect to any configured upstream MCP servers and merge their tools in.
@@ -273,6 +286,7 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
     let factory_config = config.clone();
     let factory_tools = tools.clone();
     let factory_project_bindings = project_bindings.clone();
+    let factory_conversation_exec_sessions = conversation_exec_sessions.clone();
     let service = StreamableHttpService::new(
         move || {
             let session = SessionState::new();
@@ -281,6 +295,7 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
                 config: factory_config.clone(),
                 tools: factory_tools.clone(),
                 project_bindings: factory_project_bindings.clone(),
+                conversation_exec_sessions: factory_conversation_exec_sessions.clone(),
                 session,
             })
         },
