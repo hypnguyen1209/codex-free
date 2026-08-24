@@ -18,7 +18,8 @@ use tokio::sync::{Mutex as TokioMutex, Notify};
 
 use crate::process_env::scrub_untrusted_child_env;
 use crate::project_bindings::{ProjectBindingScope, ProjectRootSelection, resolve_project_root};
-use crate::types::{AppConfig, PlanState};
+use crate::types::{AppConfig, PlanState, WorktreeMode};
+use crate::worktrees::create_managed_worktree;
 
 // Codex constants (shell_spec.rs). Kept as code, not config, because they are
 // part of matching Codex's tool semantics rather than local policy.
@@ -337,7 +338,17 @@ pub struct SessionState {
     pub exec_sessions: Arc<StdMutex<HashMap<u64, Arc<ExecSession>>>>,
     next_exec_id: AtomicU64,
     pub plan: StdMutex<Option<PlanState>>,
-    project_root: StdMutex<Option<PathBuf>>,
+    project_binding: StdMutex<Option<TransportProjectBinding>>,
+    project_selection_lock: TokioMutex<()>,
+}
+
+#[derive(Debug, Clone)]
+struct TransportProjectBinding {
+    source_project_root: PathBuf,
+    project_root: PathBuf,
+    managed_worktree: bool,
+    worktree_git_root: Option<PathBuf>,
+    worktrees_root: Option<PathBuf>,
 }
 
 impl Default for SessionState {
@@ -346,7 +357,8 @@ impl Default for SessionState {
             exec_sessions: Arc::new(StdMutex::new(HashMap::new())),
             next_exec_id: AtomicU64::new(1),
             plan: StdMutex::new(None),
-            project_root: StdMutex::new(None),
+            project_binding: StdMutex::new(None),
+            project_selection_lock: TokioMutex::new(()),
         }
     }
 }
@@ -397,7 +409,7 @@ impl SessionState {
             return Ok(config.clone());
         }
 
-        let Some(project_root) = self.project_root.lock().unwrap().clone() else {
+        let Some(binding) = self.project_binding.lock().unwrap().clone() else {
             return Err(format!(
                 "No project root is selected for this MCP transport session. If the exact path is unknown, call `list_projects` first. Then call `set_project_root` with a directory relative to the access root `{}`, followed by `get_agent_brief` before using project tools.",
                 config.work_dir.display()
@@ -405,11 +417,11 @@ impl SessionState {
         };
 
         let mut effective = config.clone();
-        effective.work_dir = project_root;
+        effective.work_dir = binding.project_root;
         Ok(effective)
     }
 
-    pub fn select_project_root(
+    pub async fn select_project_root(
         &self,
         config: &AppConfig,
         input: &str,
@@ -421,35 +433,78 @@ impl SessionState {
             );
         }
 
-        let (access_root, project_root) = resolve_project_root(config, input)?;
+        let _selection_guard = self.project_selection_lock.lock().await;
+        let (access_root, source_project_root) = resolve_project_root(config, input)?;
 
-        let mut selected = self.project_root.lock().unwrap();
-        match selected.as_ref() {
-            Some(current) if current == &project_root => Ok(ProjectRootSelection {
-                access_root,
-                project_root,
-                newly_selected: false,
-                scope: ProjectBindingScope::McpTransportSession,
-            }),
-            Some(current) => Err(format!(
-                "This MCP transport session is already bound to project root `{}` and cannot switch to `{}`. Open a new session for another project.",
-                current.display(),
-                project_root.display()
-            )),
-            None => {
-                *selected = Some(project_root.clone());
-                Ok(ProjectRootSelection {
+        if let Some(current) = self.project_binding.lock().unwrap().clone() {
+            if current.source_project_root == source_project_root {
+                return Ok(ProjectRootSelection {
                     access_root,
-                    project_root,
-                    newly_selected: true,
+                    source_project_root: current.source_project_root,
+                    project_root: current.project_root,
+                    managed_worktree: current.managed_worktree,
+                    worktree_git_root: current.worktree_git_root,
+                    worktrees_root: current.worktrees_root,
+                    worktree_mode: config.worktrees.mode,
+                    warnings: Vec::new(),
+                    newly_selected: false,
                     scope: ProjectBindingScope::McpTransportSession,
-                })
+                });
             }
+            return Err(format!(
+                "This MCP transport session is already bound to source project `{}` and cannot switch to `{}`. Open a new session for another project.",
+                current.source_project_root.display(),
+                source_project_root.display()
+            ));
         }
+
+        let create_worktree = config.worktrees.mode != WorktreeMode::Never;
+        let managed = if create_worktree {
+            Some(create_managed_worktree(config, &source_project_root).await?)
+        } else {
+            None
+        };
+        let binding = match managed.as_ref() {
+            Some(worktree) => TransportProjectBinding {
+                source_project_root: source_project_root.clone(),
+                project_root: worktree.project_root.clone(),
+                managed_worktree: true,
+                worktree_git_root: Some(worktree.worktree_git_root.clone()),
+                worktrees_root: Some(worktree.worktrees_root.clone()),
+            },
+            None => TransportProjectBinding {
+                source_project_root: source_project_root.clone(),
+                project_root: source_project_root.clone(),
+                managed_worktree: false,
+                worktree_git_root: None,
+                worktrees_root: None,
+            },
+        };
+        *self.project_binding.lock().unwrap() = Some(binding.clone());
+
+        Ok(ProjectRootSelection {
+            access_root,
+            source_project_root: binding.source_project_root,
+            project_root: binding.project_root,
+            managed_worktree: binding.managed_worktree,
+            worktree_git_root: binding.worktree_git_root,
+            worktrees_root: binding.worktrees_root,
+            worktree_mode: config.worktrees.mode,
+            warnings: managed
+                .as_ref()
+                .map(|worktree| worktree.warnings.clone())
+                .unwrap_or_default(),
+            newly_selected: true,
+            scope: ProjectBindingScope::McpTransportSession,
+        })
     }
 
     pub fn selected_project_root(&self) -> Option<PathBuf> {
-        self.project_root.lock().unwrap().clone()
+        self.project_binding
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|binding| binding.project_root.clone())
     }
 }
 
