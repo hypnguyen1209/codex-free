@@ -34,6 +34,8 @@ pub const STDIN_POLL_DEFAULT_YIELD_MS: u64 = 5_000;
 pub const STDIN_POLL_MAX_YIELD_MS: u64 = 300_000;
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 10_000;
 
+static TRANSPORT_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 /// Codex's `approx_token_count` equivalent: roughly four characters per token.
 /// Counted in UTF-16 code units to match the TS `text.length`.
 pub fn approx_token_count(text: &str) -> u64 {
@@ -209,6 +211,11 @@ struct PendingBuffer {
     omitted: u64,
 }
 
+struct PendingOutput {
+    text: String,
+    truncated: bool,
+}
+
 impl PendingBuffer {
     fn new() -> Self {
         Self::default()
@@ -237,18 +244,24 @@ impl PendingBuffer {
 
     /// Reconstructs the retained output and resets the buffer, mirroring the
     /// old `std::mem::take` semantics of "hand back everything so far, clear".
-    fn take(&mut self) -> String {
+    fn take(&mut self) -> PendingOutput {
         let head = std::mem::take(&mut self.head);
         let tail = std::mem::take(&mut self.tail);
         let omitted = std::mem::replace(&mut self.omitted, 0);
         if omitted == 0 {
             let mut out = head;
             out.push_str(&tail);
-            out
+            PendingOutput {
+                text: out,
+                truncated: false,
+            }
         } else {
-            format!(
-                "{head}\n\n[... {omitted} bytes elided (session output buffer limit) ...]\n\n{tail}"
-            )
+            PendingOutput {
+                text: format!(
+                    "{head}\n\n[... {omitted} bytes elided (session output buffer limit) ...]\n\n{tail}"
+                ),
+                truncated: true,
+            }
         }
     }
 
@@ -293,7 +306,7 @@ impl ExecSession {
     }
 
     /// Take everything buffered so far, clearing the buffer.
-    fn take_pending(&self) -> String {
+    fn take_pending(&self) -> PendingOutput {
         self.pending.lock().unwrap().take()
     }
 
@@ -313,6 +326,11 @@ impl ExecSession {
     /// Wait until the process exits or `yield_ms` elapses, then hand back
     /// everything buffered so far and clear the buffer.
     pub async fn yield_output(&self, yield_ms: u64) -> (String, bool) {
+        let (output, exited, _) = self.yield_output_with_metadata(yield_ms).await;
+        (output, exited)
+    }
+
+    pub async fn yield_output_with_metadata(&self, yield_ms: u64) -> (String, bool, bool) {
         self.touch();
         let deadline = Instant::now() + Duration::from_millis(yield_ms);
         while Instant::now() < deadline && self.exit_code().is_none() {
@@ -328,7 +346,7 @@ impl ExecSession {
         }
 
         let output = self.take_pending();
-        (output, self.exit_code().is_some())
+        (output.text, self.exit_code().is_some(), output.truncated)
     }
 }
 
@@ -513,6 +531,7 @@ fn reap_conversation_states(
 /// state for generic MCP clients, while ChatGPT calls receive a temporary view
 /// backed by [`ConversationExecSessionStore`].
 pub struct SessionState {
+    audit_id: u64,
     exec: Arc<ExecSessionState>,
     pub plan: Arc<StdMutex<Option<PlanState>>>,
     project_binding: Arc<StdMutex<Option<TransportProjectBinding>>>,
@@ -532,6 +551,7 @@ struct TransportProjectBinding {
 impl Default for SessionState {
     fn default() -> Self {
         Self {
+            audit_id: TRANSPORT_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed),
             exec: Arc::new(ExecSessionState::new()),
             plan: Arc::new(StdMutex::new(None)),
             project_binding: Arc::new(StdMutex::new(None)),
@@ -548,12 +568,17 @@ impl SessionState {
 
     fn with_exec_state(&self, exec: Arc<ExecSessionState>) -> Self {
         Self {
+            audit_id: self.audit_id,
             exec,
             plan: self.plan.clone(),
             project_binding: self.project_binding.clone(),
             project_selection_lock: self.project_selection_lock.clone(),
             review: self.review.clone(),
         }
+    }
+
+    pub fn audit_id(&self) -> u64 {
+        self.audit_id
     }
 
     /// Starts cleanup for generic-client, transport-owned resident commands.
@@ -947,7 +972,9 @@ mod tests {
         let mut buf = PendingBuffer::new();
         buf.push_str("hello ");
         buf.push_str("world");
-        assert_eq!(buf.take(), "hello world");
+        let output = buf.take();
+        assert_eq!(output.text, "hello world");
+        assert!(!output.truncated);
         assert!(buf.is_empty());
     }
 
@@ -958,9 +985,10 @@ mod tests {
         // and head+tail must equal the original stream in order.
         let text = "x".repeat(PENDING_HEAD_BYTES + 1024);
         buf.push_str(&text);
-        let out = buf.take();
-        assert_eq!(out, text);
-        assert!(!out.contains("elided"));
+        let output = buf.take();
+        assert_eq!(output.text, text);
+        assert!(!output.text.contains("elided"));
+        assert!(!output.truncated);
     }
 
     #[test]
@@ -974,10 +1002,11 @@ mod tests {
         assert!(buf.head.len() <= PENDING_HEAD_BYTES);
         assert!(buf.tail.len() <= PENDING_TAIL_BYTES);
         assert!(buf.omitted > 0);
-        let out = buf.take();
-        assert!(out.contains("elided"));
-        assert!(out.starts_with("aaaa"));
-        assert!(out.ends_with("aaaa"));
+        let output = buf.take();
+        assert!(output.text.contains("elided"));
+        assert!(output.text.starts_with("aaaa"));
+        assert!(output.text.ends_with("aaaa"));
+        assert!(output.truncated);
         assert!(buf.is_empty());
     }
 
@@ -1165,8 +1194,9 @@ mod tests {
         assert!(buf.head.len() <= PENDING_HEAD_BYTES);
         assert!(buf.tail.len() <= PENDING_TAIL_BYTES);
         assert!(buf.omitted > 0);
-        let out = buf.take(); // must not panic on a char boundary
-        assert!(out.starts_with("xé"));
-        assert!(out.ends_with('é'));
+        let output = buf.take(); // must not panic on a char boundary
+        assert!(output.text.starts_with("xé"));
+        assert!(output.text.ends_with('é'));
+        assert!(output.truncated);
     }
 }

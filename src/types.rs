@@ -17,6 +17,16 @@ pub enum ToolContent {
     Image { data: String, mime_type: String },
 }
 
+/// Metadata retained for operational accounting without retaining tool output.
+#[derive(Debug, Clone, Default)]
+pub struct ToolAuditMetadata {
+    pub truncated: Option<bool>,
+    pub original_output_tokens: Option<u64>,
+    pub exec_session_id: Option<u64>,
+    pub process_id: Option<u32>,
+    pub resident: Option<bool>,
+}
+
 /// What a tool hands back. Mirrors the repo's `ToolResult`: a list of content
 /// blocks, an error flag, and an optional machine-readable form that matches the
 /// tool's `outputSchema`.
@@ -25,6 +35,7 @@ pub struct ToolResult {
     pub content: Vec<ToolContent>,
     pub is_error: bool,
     pub structured_content: Option<Value>,
+    pub audit: ToolAuditMetadata,
 }
 
 impl ToolResult {
@@ -34,6 +45,7 @@ impl ToolResult {
             content: vec![ToolContent::Text(text.into())],
             is_error: false,
             structured_content: None,
+            audit: ToolAuditMetadata::default(),
         }
     }
 
@@ -43,6 +55,7 @@ impl ToolResult {
             content: vec![ToolContent::Text(text.into())],
             is_error: true,
             structured_content: None,
+            audit: ToolAuditMetadata::default(),
         }
     }
 
@@ -55,12 +68,18 @@ impl ToolResult {
             }],
             is_error: false,
             structured_content: None,
+            audit: ToolAuditMetadata::default(),
         }
     }
 
     /// Attach the machine-readable form matching the tool's output schema.
     pub fn with_structured(mut self, value: Value) -> Self {
         self.structured_content = Some(value);
+        self
+    }
+
+    pub fn with_truncation(mut self, truncated: bool) -> Self {
+        self.audit.truncated = Some(truncated);
         self
     }
 
@@ -405,11 +424,30 @@ pub struct WorktreeConfig {
     pub keep_count: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct AuditConfig {
+    pub log_file: Option<std::path::PathBuf>,
+    pub include_command_preview: bool,
+    pub command_preview_max_bytes: usize,
+    pub redact_env: Vec<String>,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            log_file: None,
+            include_command_preview: false,
+            command_preview_max_bytes: 512,
+            redact_env: Vec::new(),
+        }
+    }
+}
+
 /// The fully-resolved server configuration handed to every tool.
 ///
 /// `work_dir` and `port` are always concrete. Project-catalog, worktree, review,
-/// project-document, output, memory, skills, and ignore settings are resolved or
-/// retain module-owned optional defaults as appropriate.
+/// audit, project-document, output, memory, skills, and ignore settings are
+/// resolved or retain module-owned optional defaults as appropriate.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub work_dir: std::path::PathBuf,
@@ -428,6 +466,7 @@ pub struct AppConfig {
     pub memory: MemoryConfig,
     pub skills: SkillsConfig,
     pub ignore: IgnoreConfig,
+    pub audit: AuditConfig,
     /// Host authorities accepted for DNS-rebinding protection. Empty means
     /// "accept any Host", which the original bridge did so it works behind a
     /// tunnel that presents an arbitrary hostname.

@@ -5,6 +5,7 @@ use anyhow::Context;
 use codex_free::config::{
     Cli, CliCommand, ProjectsCommand, ProjectsListArgs, load_config, load_project_catalog_for_cli,
 };
+use codex_free::logging;
 use codex_free::project_catalog::{
     MAX_PROJECT_LIMIT, ProjectCatalogDiagnostic, ProjectListOutput, ProjectSource,
     ProjectTrustLevel,
@@ -107,22 +108,7 @@ fn run_projects_list(cli: &Cli, args: &ProjectsListArgs) -> Result<(), String> {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    if let Some(CliCommand::Projects {
-        command: ProjectsCommand::List(args),
-    }) = &cli.command
-    {
-        if let Err(error) = run_projects_list(&cli, args) {
-            eprintln!("Error: {error}");
-            std::process::exit(1);
-        }
-        return;
-    }
-
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    logging::init(cli.verbose);
 
     if let Err(error) = run(cli).await {
         eprintln!("Error: {error:#}");

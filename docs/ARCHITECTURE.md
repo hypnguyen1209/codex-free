@@ -52,6 +52,10 @@ ChatGPT / MCP client
 │    • project-open + last-review snapshots     │
 │    • scoped Git refs + MCP Apps resource      │
 │                                               │
+│  optional shared AuditLogger                  │
+│    • redacted JSONL tool lifecycle records    │
+│    • no raw arguments or returned output      │
+│                                               │
 │  per-transport SessionState                   │
 │    • fallback root for generic MCP clients    │
 │    • generic exec + plan + review fallback    │
@@ -115,7 +119,13 @@ Four surfaces reach the model:
 9. Review checkpoints remain fixed until an accepted `show_changes` call advances
    `last-review` with compare-and-swap semantics. Merely rendering or comparing a
    patch does not move either baseline.
-10. When a transport ends, its generic-client exec state loses its final owner and
+10. Dispatch emits diagnostic tracing and, when enabled, paired JSONL `tool_start`
+    / `tool_finish` audit records. Identity and project values are hashed; scalar
+    argument values and returned payloads are replaced by schema-bounded shape and
+    size accounting. Unknown argument keys and dynamic-map keys are not recorded.
+    `set_project_root` refreshes the finish scope so the completed record identifies
+    the newly selected project without exposing its path.
+11. When a transport ends, its generic-client exec state loses its final owner and
    kills resident process trees; its generic review fallback is discarded.
    Conversation-owned process state remains available to replacement transports
    until idle cleanup or server shutdown. Conversation project bindings and review
@@ -153,11 +163,14 @@ trait Tool: Send + Sync {
 ```
 
 ### `ToolResult` (`types.rs`)
-`{ content: Vec<ToolContent>, is_error: bool, structured_content: Option<Value> }`.
+`{ content: Vec<ToolContent>, is_error: bool, structured_content: Option<Value>, audit: ToolAuditMetadata }`.
 The server converts it to rmcp's `CallToolResult`. Tools with an `outputSchema`
 whose text *is* the structured form rely on the server's default-fill
 (`{ "content": <joined text> }`); tools that build their own structured content —
 or bridge it from upstream — return `fills_structured_content() == false`.
+`ToolAuditMetadata` is not sent over MCP; bounded-output and resident-process tools
+use it to report truncation, original token count, exec-session ID and PID without
+putting operational fields into their public output schema.
 
 ### `ProjectBindingStore` (`project_bindings.rs`)
 Shared, durable conversation-to-project bindings. `ConversationIdentity` hashes
@@ -192,6 +205,16 @@ headers, bound file and patch results, and advance `last-review` through `git up
 compare-and-swap. The same per-owner/project lock spans mutating tool calls through
 completion so reviews cannot capture an in-process write halfway through.
 
+### `AuditLogger` (`audit.rs`)
+Optional process-shared append-only JSONL logging. Tool-start records contain only
+schema-bounded argument shape and hashed transport/conversation/project scope;
+tool-finish records contain status, duration, output accounting, truncation, and
+resident-process metadata. Raw arguments and returned payloads are never retained.
+Command previews are separately opt-in, bounded after redaction, and limited to
+`exec_command` and `run_command`. Audit-file creation rejects unsafe Unix
+permissions and symbolic-link targets; later write failures are diagnosed without
+changing an already-executed tool result.
+
 ### `AppConfig` (`types.rs`)
 The fully-resolved config handed to every tool. `config.rs` parses
 `codex.config.json` with camelCase field names for backward compatibility, imports
@@ -199,7 +222,7 @@ user-level Codex MCP definitions through the shared `codex_config.rs` reader and
 `codex_mcp.rs`, opportunistically adds plugin-provided entries from the Codex CLI's
 effective catalogue, then applies explicit `mcpServers` entries as field overlays.
 Optional sub-configs (`projectDoc`, `projectCatalog`, `output`, `memory`, `skills`,
-`review`, `ignore`, and `worktrees`) fall back to per-module defaults. In
+`review`, `ignore`, `worktrees`, and `audit`) fall back to per-module defaults. In
 multi-project mode, dispatch clones this config per call and substitutes the
 conversation's selected root—or the transport fallback—for `work_dir`; the static
 server policy, catalogue overlay, worktree policy, and bridge configuration remain
@@ -235,8 +258,8 @@ ordinary supervised server lifecycle; there is no separate quickstart runtime.
   `ProjectBindingStore` resolves its project, while the in-memory
   `ConversationExecSessionStore` resolves resident commands across replacement
   transports and `ReviewCheckpointManager` resolves persistent review refs.
-  Upstream MCP connections, all three stores, and the tool registry are shared
-  (`Arc`) across transports.
+  Upstream MCP connections, all three stores, the optional `AuditLogger`, and the
+  tool registry are shared (`Arc`) across transports.
 - **`get_info`** advertises server name `codex-free` (wire-compatible identity),
   version, tools/resources capabilities, the `io.modelcontextprotocol/ui` extension,
   and the `instructions`. The review resource is embedded in the binary and has no
@@ -311,6 +334,8 @@ the original order and rejects duplicate names.
 |--------|----------------|
 | `safe_path.rs` | Lexical path-traversal guard (no `canonicalize`; component-wise containment). The security boundary for every filesystem tool. |
 | `output_budget.rs` | Line/byte windowing and list caps, each cut announced with the continuation argument. |
+| `audit.rs` | Private append-only JSONL tool lifecycle records, stable hashed identities, redacted argument summaries, output accounting, and opt-in bounded command previews. |
+| `logging.rs` | Default tracing filters for normal, `-v`, and `-vv` operation; an explicit `RUST_LOG` remains authoritative. |
 | `ignore_rules.rs` | One `.gitignore`-accurate matcher (the `ignore` crate) shared by glob/grep/tree/list_directory. |
 | `exec_policy.rs` | Shell-string allowlist guard for `exec_command` (a guardrail, not a sandbox). |
 | `project_bindings.rs` | Canonical project-root validation plus durable ChatGPT conversation bindings keyed by a hash of `openai/session`, namespaced by access root, locked per record, and atomically written. |
@@ -469,6 +494,8 @@ startup banner prints the exact file with `Config:`). All fields optional.
   "ignore": { "useGitignore": true, "useDefaultPatterns": true, "customPatterns": [] },
   "output": { "maxFileLines": 1000, "maxFileBytes": 131072, "maxEntries": 500, "maxTreeNodes": 1000 },
   "review": { "maxPatchBytes": 524288 },
+  "audit": { "logFile": null, "includeCommandPreview": false,
+             "commandPreviewMaxBytes": 512, "redactEnv": [] },
   "projectDoc": { "maxBytes": 32768, "fallbackFilenames": [], "rootMarkers": [".git"] },
   "memory": { "enabled": true, "dir": "…", "maxBytes": 16384 },
   "skills": { "enabled": true, "dirs": ["…"], "includePlugins": true },
@@ -506,6 +533,8 @@ Tools loaded (27): 26 native + 1 bridged from upstream MCP servers
 Upstream MCP servers:
   remote-exec -> gateway (84 functions via `remote_exec`)
 Auth: disabled (no --api-key)
+Audit log: /private/path/tools.jsonl
+Audit command previews: disabled
 ```
 
 - `Config:` reveals the common mistake of editing a different file than the one
@@ -518,6 +547,9 @@ Auth: disabled (no --api-key)
 - Multi-project startup also prints `Project access root:`, `Project mode:
   persistent ChatGPT conversation binding`, and the conversation-binding state
   directory; its native count is 28 because both catalogue and selector tools are present.
+- `-v` and `-vv` increase Codex Free diagnostics without dumping raw tool payloads;
+  `RUST_LOG` overrides those defaults. When audit logging is configured, the banner
+  prints its destination and whether command previews are enabled.
 
 ---
 
@@ -562,6 +594,9 @@ units to match the TS `text.length` / `text.slice`.
   end-to-end.
 - `bridge.rs` starts a loopback Streamable HTTP MCP server to verify bearer and
   custom headers, remote discovery/calls, and cancellable tool deadlines.
+- `audit.rs` verifies schema-bounded summaries, secret redaction, byte-strict
+  preview limits, stable path hashing, JSONL lifecycle records, and private-file
+  enforcement.
 
 Run: `cargo test`. Build a standalone binary: `cargo build --release`.
 
