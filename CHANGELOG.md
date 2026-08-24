@@ -33,6 +33,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `codex-free projects list` for local catalogue diagnostics, with query and JSON
   output plus an explicit `--show-skipped` mode. Rejected absolute paths remain
   hidden from MCP output and normal CLI output.
+- Upstream MCP Streamable HTTP support alongside stdio. Codex Free now imports
+  compatible `url` entries from Codex configuration and accepts remote entries in
+  `codex.config.json`, including bearer-token environment variables, static and
+  environment-backed HTTP headers, startup timeouts, per-tool cancellable
+  timeouts, the existing tool filters, and gateway mode.
 
 ### Fixed
 
@@ -42,6 +47,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   connector reconnect. Generic MCP clients retain transport-owned process
   cleanup; conversation-owned processes remain bounded by the configured idle
   timeout and are killed when the server stops.
+
+### Security
+
+- Remote bearer tokens and environment-backed headers are resolved only when the
+  upstream connection is created and are never included in discovery reports.
+  Configured tool-call timeouts use RMCP cancellation rather than abandoning an
+  in-flight request. Legacy SSE/WebSocket transports, literal Codex
+  `bearer_token` values, mixed stdio/HTTP settings, and ambiguous duplicate
+  Authorization configuration are rejected explicitly.
 
 ## [1.2.0] - 2026-08-24
 
