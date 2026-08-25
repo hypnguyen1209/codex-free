@@ -190,6 +190,62 @@ pub struct MemoryConfig {
     pub max_bytes: Option<usize>,
 }
 
+pub const DEFAULT_ARTIFACT_MAX_FILE_BYTES: u64 = 100 * 1024 * 1024;
+pub const DEFAULT_ARTIFACT_REQUEST_TIMEOUT_MS: u64 = 120_000;
+pub const DEFAULT_ARTIFACT_IDLE_TIMEOUT_MS: u64 = 30_000;
+pub const DEFAULT_ARTIFACT_MAX_REDIRECTS: u8 = 3;
+pub const DEFAULT_ARTIFACT_MAX_CONCURRENT_DOWNLOADS: usize = 2;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ArtifactIngressConfig {
+    pub enabled: bool,
+    pub max_file_bytes: u64,
+    pub request_timeout_ms: u64,
+    pub idle_timeout_ms: u64,
+    pub max_redirects: u8,
+    pub max_concurrent_downloads: usize,
+}
+
+impl Default for ArtifactIngressConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_file_bytes: DEFAULT_ARTIFACT_MAX_FILE_BYTES,
+            request_timeout_ms: DEFAULT_ARTIFACT_REQUEST_TIMEOUT_MS,
+            idle_timeout_ms: DEFAULT_ARTIFACT_IDLE_TIMEOUT_MS,
+            max_redirects: DEFAULT_ARTIFACT_MAX_REDIRECTS,
+            max_concurrent_downloads: DEFAULT_ARTIFACT_MAX_CONCURRENT_DOWNLOADS,
+        }
+    }
+}
+
+impl ArtifactIngressConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_file_bytes == 0 {
+            return Err("artifactIngress.maxFileBytes must be positive".to_string());
+        }
+        if self.request_timeout_ms == 0 {
+            return Err("artifactIngress.requestTimeoutMs must be positive".to_string());
+        }
+        if self.idle_timeout_ms == 0 || self.idle_timeout_ms > self.request_timeout_ms {
+            return Err(
+                "artifactIngress.idleTimeoutMs must be positive and no greater than requestTimeoutMs"
+                    .to_string(),
+            );
+        }
+        if self.max_redirects > 10 {
+            return Err("artifactIngress.maxRedirects must be between 0 and 10".to_string());
+        }
+        if !(1..=16).contains(&self.max_concurrent_downloads) {
+            return Err(
+                "artifactIngress.maxConcurrentDownloads must be between 1 and 16".to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
 pub const DEFAULT_REVIEW_MAX_PATCH_BYTES: usize = 512 * 1024;
 
 /// Bounds review results without changing checkpoint semantics.
@@ -446,7 +502,7 @@ impl Default for AuditConfig {
 /// The fully-resolved server configuration handed to every tool.
 ///
 /// `work_dir` and `port` are always concrete. Project-catalog, worktree, review,
-/// audit, project-document, output, memory, skills, and ignore settings are
+/// artifact-ingress, audit, project-document, output, memory, skills, and ignore settings are
 /// resolved or retain module-owned optional defaults as appropriate.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -462,6 +518,7 @@ pub struct AppConfig {
     pub exec: ExecConfig,
     pub project_doc: ProjectDocConfig,
     pub output: OutputConfig,
+    pub artifact_ingress: ArtifactIngressConfig,
     pub review: ReviewConfig,
     pub memory: MemoryConfig,
     pub skills: SkillsConfig,

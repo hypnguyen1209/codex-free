@@ -6,7 +6,7 @@ A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine: 
 
 In native-tunnel mode, Codex Free listens only on `127.0.0.1`, protects the MCP endpoint with a random per-process bearer token, starts OpenAI's official runtime-only tunnel client, and supervises it for the lifetime of the server. The tunnel client makes outbound HTTPS requests to OpenAI and forwards tunnel traffic to the authenticated loopback MCP endpoint. A conventional externally managed tunnel remains available as an alternative.
 
-The tool set covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. It carries the project's `AGENTS.md` and Codex's own agent brief, so the client is told how to behave and not just what it can call. It bounds what a tool call can return, keeps a plan and notes on disk across conversations, and records project-scoped review checkpoints so ChatGPT can inspect either the full task diff or only changes since the last review. And it loads Codex's skills: a `SKILL.md` in the repo or your home directory teaches the client how *you* do a recurring task, and only the ones that apply are ever read. Schemas and prompt are ported from the Codex source, not reimplemented from guesswork.
+The tool set covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. It carries the project's `AGENTS.md` and Codex's own agent brief, so the client is told how to behave and not just what it can call. It bounds what a tool call can return, keeps a plan and notes on disk across conversations, records project-scoped review checkpoints so ChatGPT can inspect either the full task diff or only changes since the last review, and can stream a user attachment or ChatGPT-generated file into the active project without reconstructing binary data through text. And it loads Codex's skills: a `SKILL.md` in the repo or your home directory teaches the client how *you* do a recurring task, and only the ones that apply are ever read. Schemas and prompt are ported from the Codex source, not reimplemented from guesswork.
 
 Beyond the port, Codex Free can **aggregate other MCP servers** — connecting to local stdio servers or remote Streamable HTTP endpoints and re-exposing their tools through its own endpoint, so the ChatGPT-side agent can call them too.
 
@@ -21,6 +21,7 @@ flowchart LR
     Tools["Tool Registry"]
 
     FS["read_file\nwrite_file\nlist_directory\ntree"]
+    Ingress["import_host_file"]
     Search["glob\ngrep"]
     Shell["run_command"]
     Git["git_status\nshow_changes\ngit_push\ngit_commit\ngit_log"]
@@ -50,6 +51,7 @@ flowchart LR
     Server -- "Streamable HTTP\n(MCP Protocol)" --> Tools
 
     Tools --> FS
+    Tools --> Ingress
     Tools --> Search
     Tools --> Shell
     Tools --> Git
@@ -64,6 +66,7 @@ flowchart LR
     Tools --> Bridge
 
     FS --> WorkDir
+    Ingress --> WorkDir
     Search --> WorkDir
     Shell --> WorkDir
     Edit --> WorkDir
@@ -224,6 +227,7 @@ Structured primitives — cheaper and safer than shelling out for the same job, 
 |------|-------------|
 | `read_file` | Read a file's contents, a bounded window at a time, with optional line offset/limit |
 | `write_file` | Write content to a file, creating parent directories if needed |
+| `import_host_file` | Stream one ChatGPT attachment or generated file into a new project-relative path, with bounded size, SHA-256 verification and atomic no-overwrite publication |
 | `run_command` | Execute a command in the work directory (allowlist-restricted) |
 | `git_status` | Show git status, parsed into changed files with status codes |
 | `show_changes` | Compare the scoped working tree with the project-open or last-review checkpoint, optionally advancing the incremental baseline; compatible hosts render an interactive review card |
@@ -270,7 +274,7 @@ Multi-project mode adds two project-control tools:
 
 Codex needs the first three for none of these reasons: it puts its agent brief in the system prompt, the OS and shell in an `<environment_context>` message, and `AGENTS.md` straight into the prompt, all before the first turn. An MCP server has none of those channels — it can only expose tools — so the same facts are tool calls here as well as part of the server's `instructions`. It needs `remember` and `recall` for the opposite reason: its context is large and its session state lives in the CLI process, whereas the client here is a chat window that loses the conversation. See [Context and memory](#context-and-memory), [Acting as a Codex agent](#acting-as-a-codex-agent), [Shells and the host](#shells-and-the-host), [AGENTS.md](#agentsmd) and [Skills](#skills).
 
-That is 26 native tools in the default single-project mode and 28 in multi-project mode. When [MCP bridging](#bridging-other-mcp-servers) is configured, the tools of your other MCP servers are re-exposed here too, on top of these.
+That is 27 native tools in the default single-project mode and 29 in multi-project mode. Setting `artifactIngress.enabled` to `false` removes `import_host_file`, reducing either count by one. When [MCP bridging](#bridging-other-mcp-servers) is configured, the tools of your other MCP servers are re-exposed here too, on top of these.
 
 Two deliberate differences from Codex:
 
@@ -287,7 +291,7 @@ sessions.
 
 `clock_sleep` also caps at 5 minutes rather than Codex's 12 hours — a longer wait would outlive the HTTP request through the tunnel.
 
-Every tool that advertises an `outputSchema` also returns `structuredContent` matching it, as the MCP spec asks. `exec_command` and `write_stdin` return Codex's unified-exec object, `show_changes` returns its review summary, file records, warnings and bounded patch, `clock_curr_time` returns `{ current_time }`, `get_environment` returns the environment object, `get_project_doc` returns `{ files, content }` and `skills_list` returns `{ skills, content }`; the rest return `{ content: <text> }`, which the server derives from the text blocks so handlers don't repeat it.
+Every tool that advertises an `outputSchema` also returns `structuredContent` matching it, as the MCP spec asks. `exec_command` and `write_stdin` return Codex's unified-exec object, `import_host_file` returns its destination, byte count and SHA-256 receipt, `show_changes` returns its review summary, file records, warnings and bounded patch, `clock_curr_time` returns `{ current_time }`, `get_environment` returns the environment object, `get_project_doc` returns `{ files, content }` and `skills_list` returns `{ skills, content }`; the rest return `{ content: <text> }`, which the server derives from the text blocks so handlers don't repeat it.
 
 All project-scoped paths are resolved relative to the active project root: `--work-dir` in single-project mode, or the root selected for the current ChatGPT conversation in multi-project mode. Non-ChatGPT clients use the root selected for their current MCP transport session.
 
@@ -340,6 +344,14 @@ All project-scoped paths are resolved relative to the active project root: `--wo
     "maxEntries": 500,
     "maxTreeNodes": 1000
   },
+  "artifactIngress": {
+    "enabled": true,
+    "maxFileBytes": 104857600,
+    "requestTimeoutMs": 120000,
+    "idleTimeoutMs": 30000,
+    "maxRedirects": 3,
+    "maxConcurrentDownloads": 2
+  },
   "review": {
     "maxPatchBytes": 524288
   },
@@ -379,14 +391,39 @@ All project-scoped paths are resolved relative to the active project root: `--wo
 
 CLI flags override values from the config file.
 
+## Native host-file ingress
+
+ChatGPT attachments and generated files live in host-managed storage, not automatically on the machine running Codex Free. `import_host_file` closes that gap:
+
+```text
+user attaches or ChatGPT generates a file
+        ↓
+the agent calls import_host_file(file, path)
+        ↓
+ChatGPT supplies a temporary authorized native-file value
+        ↓
+Codex Free streams the exact bytes into the active project
+```
+
+The import is explicit rather than automatic: the agent chooses a new project-relative destination, and the tool refuses to replace an existing file. Source and destination authority are deliberately narrow:
+
+- only HTTPS URLs on OpenAI's `oaiusercontent.com` domain or its subdomains are accepted, and every redirect is revalidated;
+- arbitrary URLs, local source paths, caller-supplied headers, cookies, ambient credentials, and proxy environment variables are not accepted or inherited;
+- the temporary signed URL and file ID are never returned, persisted, or included in audit records, and RMCP protocol events are suppressed before they can format the request;
+- destination traversal, moved roots, symlink escapes, partial-path replacement, and overwrite races are checked through capability-confined directory handles and file identities;
+- bytes are streamed into a private same-directory partial, bounded by configured size and time limits, hashed with SHA-256, synchronized, and atomically published through a no-overwrite hard link;
+- MCP cancellation interrupts queueing, transfer, writes, and pre-commit filesystem work. Archive extraction, execution, and general URL downloading remain outside this tool's contract.
+
 ## Diagnostics and audit logging
 
-The default tracing level remains `info`. `-v` changes the default filter to `codex_free=debug,rmcp=warn`, which adds tool-start events, hashed conversation/project context, argument field names, duration, and output accounting without dumping protocol traffic. `-vv` changes Codex Free to `trace` while keeping `rmcp` at `warn`, and adds the fully redacted argument-shape summary. An explicit `RUST_LOG` value takes precedence over `-v`/`-vv` when protocol-level diagnostics are required:
+The default tracing level remains `info`. `-v` enables Codex Free debug diagnostics, including tool-start events, hashed conversation/project context, argument field names, duration, and output accounting. `-vv` adds trace-level, fully redacted argument-shape summaries. An explicit `RUST_LOG` value takes precedence over those defaults for Codex Free and other non-RMCP targets:
 
 ```bash
 codex-free -v --work-dir /path/to/project
-RUST_LOG=codex_free=trace,rmcp=warn codex-free --work-dir /path/to/project
+RUST_LOG=codex_free=trace codex-free --work-dir /path/to/project
 ```
+
+RMCP framework events are always excluded from the tracing layer, even when `RUST_LOG` asks for them. A native-file tool request contains a temporary signed download URL before Codex Free's handler can redact it, and RMCP may otherwise format complete protocol messages at several log levels. This is a deliberate payload-safety boundary rather than a verbosity setting.
 
 Audit logging is separate from diagnostic tracing and is disabled unless a file is configured:
 
@@ -496,6 +533,17 @@ The `output` block bounds what a single tool call may return. See [Context and m
 | `maxFileBytes` | `131072` | Byte ceiling for the same window, which is what actually bounds a minified file |
 | `maxEntries` | `500` | Results per `glob` or `list_directory` call |
 | `maxTreeNodes` | `1000` | Nodes in one `tree` walk, counted across the whole tree rather than per directory |
+
+The `artifactIngress` block governs [native host-file ingress](#native-host-file-ingress):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | Expose `import_host_file`; `false` removes the tool from `tools/list` and the corresponding agent instruction |
+| `maxFileBytes` | `104857600` | Maximum downloaded bytes per file (100 MiB, approximately 104.9 MB), enforced from both declared and streamed size |
+| `requestTimeoutMs` | `120000` | Whole import deadline, including queueing, network transfer, writes, synchronization, and publication |
+| `idleTimeoutMs` | `30000` | Maximum wait between response-body chunks; must not exceed `requestTimeoutMs` |
+| `maxRedirects` | `3` | Maximum manually validated redirects, between `0` and `10` |
+| `maxConcurrentDownloads` | `2` | Concurrent native-file imports; accepted range is `1`-`16` |
 
 The `review` block bounds presentation without changing checkpoint semantics:
 
@@ -889,7 +937,7 @@ Codex CLI MCP discovery: codex
 Codex MCP overrides:
   remote-exec -> imported fields overlaid by codex.config.json
 bridged MCP server 'idasql': 12 tool(s)
-Tools loaded (38): 26 native + 12 bridged from upstream MCP servers
+Tools loaded (39): 27 native + 12 bridged from upstream MCP servers
 ```
 
 Each upstream tool is offered as `<server>__<tool>` (for example `remote_exec__docker_ps`), and calls are forwarded to the upstream verbatim — text, images, structured content and error flags all pass through. An upstream that fails to launch, connect, authenticate, or answer is skipped; it never blocks startup or the native tools.
@@ -962,6 +1010,7 @@ Native tunnel mode ignores `allowedHosts` and forces the accepted authorities to
 ## Security
 
 - **Path traversal prevention**: every filesystem tool — including `apply_patch` and `view_image` — resolves paths through a guard that rejects anything outside the active project root. In multi-project mode, both catalogue discovery and `set_project_root` canonicalize the configured access root and candidate directory, so `..` and symlinks cannot expose or bind a project outside the access root.
+- **Host-authorized native-file ingress**: `import_host_file` accepts only ChatGPT's declared native-file object, rejects arbitrary URLs and local source paths, revalidates every trusted-provider redirect, ignores ambient proxy credentials, and enforces whole-request, idle, size, redirect, concurrency, and MCP-cancellation limits. Destination publication uses a capability-confined directory handle, project-root and file-identity revalidation, a private partial file, SHA-256, and atomic no-overwrite linking so traversal, moved roots, symlink escapes, partial visibility, path substitution, and replacement races fail closed.
 - **One bounded exception in single-project mode**: [AGENTS.md](#agentsmd) discovery may read above `--work-dir`, up to the nearest `.git`. It is read-only, opens only `AGENTS.override.md`, `AGENTS.md` and any `projectDoc.fallbackFilenames`, and `get_project_doc` reports the absolute path of every file it used. Set `projectDoc.maxBytes` to `0` to switch it off, or `projectDoc.rootMarkers` to `[]` to keep the search inside the work directory. Multi-project mode does not perform this upward walk; its selected directory is the exact project root.
 - **Namespaced review state inside Git**: ChatGPT review checkpoints are exactly two refs per conversation/project pair under `refs/codex-free/review/`. Synthetic snapshots contain only the selected project path, are built through a temporary index, and never modify the real index or working tree. Generic MCP-client checkpoints are in memory only. The namespace grows with the number of distinct persistent conversation/project pairs; the review section documents inspection and manual removal.
 - **Bounded state writes outside the work directory**: `remember` and `update_plan` write `memory.json` under `~/.codex-free/projects/`. Multi-project mode also writes one small project-binding record under `~/.codex-free/conversation-projects/` for each ChatGPT conversation and access root. Both use atomic replacement and per-record locks. The binding filename is derived from a hash of `openai/session`; the raw identifier is not stored. Set `memory.enabled` to `false` to disable plans and notes; delete `~/.codex-free/conversation-projects/` separately to forget conversation bindings. See [Context and memory](#context-and-memory).

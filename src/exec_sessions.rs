@@ -618,8 +618,88 @@ impl SessionState {
             ));
         };
 
+        let access_root = std::fs::canonicalize(&config.work_dir).map_err(|error| {
+            format!(
+                "The configured project access root no longer exists or cannot be resolved: {}: {error}",
+                config.work_dir.display()
+            )
+        })?;
+        let source_project_root = std::fs::canonicalize(&binding.source_project_root).map_err(|error| {
+            format!(
+                "The source project bound to this MCP transport session no longer exists or cannot be resolved: {}: {error}. Open a new session for another project.",
+                binding.source_project_root.display()
+            )
+        })?;
+        if !source_project_root.is_dir() {
+            return Err(format!(
+                "The source project bound to this MCP transport session is no longer a directory: {}. Open a new session for another project.",
+                source_project_root.display()
+            ));
+        }
+        if source_project_root != access_root && !source_project_root.starts_with(&access_root) {
+            return Err(format!(
+                "The source project bound to this MCP transport session now resolves outside the configured access root: {}. Open a new session for another project.",
+                source_project_root.display()
+            ));
+        }
+
+        let project_root = std::fs::canonicalize(&binding.project_root).map_err(|error| {
+            format!(
+                "The active project bound to this MCP transport session no longer exists or cannot be resolved: {}: {error}. Open a new session for another project.",
+                binding.project_root.display()
+            )
+        })?;
+        if !project_root.is_dir() {
+            return Err(format!(
+                "The active project bound to this MCP transport session is no longer a directory: {}. Open a new session for another project.",
+                project_root.display()
+            ));
+        }
+        if binding.managed_worktree {
+            let worktree_git_root = binding.worktree_git_root.as_ref().ok_or_else(|| {
+                "The managed worktree bound to this MCP transport session has no recorded Git root. Open a new session for another project.".to_string()
+            })?;
+            let worktrees_root = binding.worktrees_root.as_ref().ok_or_else(|| {
+                "The managed worktree bound to this MCP transport session has no recorded worktree root. Open a new session for another project.".to_string()
+            })?;
+            let worktree_git_root = std::fs::canonicalize(worktree_git_root).map_err(|error| {
+                format!(
+                    "The managed worktree Git root bound to this MCP transport session no longer exists or cannot be resolved: {}: {error}. Open a new session for another project.",
+                    worktree_git_root.display()
+                )
+            })?;
+            let worktrees_root = std::fs::canonicalize(worktrees_root).map_err(|error| {
+                format!(
+                    "The managed worktree root bound to this MCP transport session no longer exists or cannot be resolved: {}: {error}. Open a new session for another project.",
+                    worktrees_root.display()
+                )
+            })?;
+            if worktree_git_root == worktrees_root
+                || !worktree_git_root.starts_with(&worktrees_root)
+            {
+                return Err(format!(
+                    "The managed worktree Git root {} is outside its recorded worktree root {}. Open a new session for another project.",
+                    worktree_git_root.display(),
+                    worktrees_root.display()
+                ));
+            }
+            if project_root != worktree_git_root && !project_root.starts_with(&worktree_git_root) {
+                return Err(format!(
+                    "The active project {} is outside its managed worktree Git root {}. Open a new session for another project.",
+                    project_root.display(),
+                    worktree_git_root.display()
+                ));
+            }
+        } else if project_root != source_project_root {
+            return Err(format!(
+                "The direct project binding for this MCP transport session now resolves inconsistently: source {} versus active {}. Open a new session for another project.",
+                source_project_root.display(),
+                project_root.display()
+            ));
+        }
+
         let mut effective = config.clone();
-        effective.work_dir = binding.project_root;
+        effective.work_dir = project_root;
         Ok(effective)
     }
 

@@ -1,9 +1,27 @@
 {
-  "allowedCommands": ["bun", "npm", "npx", "node", "git", "python", "pip", "cargo", "make"],
+  "allowedCommands": [
+    "bun",
+    "npm",
+    "npx",
+    "node",
+    "git",
+    "python",
+    "pip",
+    "cargo",
+    "make"
+  ],
   "port": 3000,
   "tree": {
     "defaultDepth": 3,
-    "ignore": ["node_modules", ".git", "dist", ".next", "__pycache__", ".venv", "venv"]
+    "ignore": [
+      "node_modules",
+      ".git",
+      "dist",
+      ".next",
+      "__pycache__",
+      ".venv",
+      "venv"
+    ]
   },
   "ignore": {
     "useGitignore": true,
@@ -17,11 +35,35 @@
   "exec": {
     "mode": "allowlist",
     "extraAllowedCommands": [
-      "ls", "cat", "grep", "find", "head", "tail", "wc", "echo", "pwd",
-      "which", "rg", "sed", "awk", "sort", "uniq", "diff", "true", "false"
+      "ls",
+      "cat",
+      "grep",
+      "find",
+      "head",
+      "tail",
+      "wc",
+      "echo",
+      "pwd",
+      "which",
+      "rg",
+      "sed",
+      "awk",
+      "sort",
+      "uniq",
+      "diff",
+      "true",
+      "false"
     ],
     "maxSessions": 8,
     "idleTimeoutMs": 300000
+  },
+  "artifactIngress": {
+    "enabled": true,
+    "maxFileBytes": 104857600,
+    "requestTimeoutMs": 120000,
+    "idleTimeoutMs": 30000,
+    "maxRedirects": 3,
+    "maxConcurrentDownloads": 2
   },
   "projectCatalog": {
     "codexConfig": {
