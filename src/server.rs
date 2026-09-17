@@ -17,7 +17,7 @@ use axum::{Router, extract::State, response::Json, routing::get};
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+        CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
         ExtensionCapabilities, Implementation, InitializeResult, ListResourcesResult,
         ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
         ReadResourceResult, ServerCapabilities, ServerInfo,
@@ -244,7 +244,9 @@ impl ServerHandler for CodexHandler {
             .iter()
             .map(|tool| advertised_tool(tool.as_ref(), &self.config))
             .collect();
-        Ok(ListToolsResult::with_all_items(tools))
+        Ok(ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private))
     }
 
     async fn list_resources(
@@ -252,9 +254,11 @@ impl ServerHandler for CodexHandler {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        Ok(ListResourcesResult::with_all_items(vec![
-            review_ui::resource(),
-        ]))
+        Ok(
+            ListResourcesResult::with_all_items(vec![review_ui::resource()])
+                .with_ttl_ms(0)
+                .with_cache_scope(CacheScope::Private),
+        )
     }
 
     async fn read_resource(
@@ -268,7 +272,10 @@ impl ServerHandler for CodexHandler {
             .await
         {
             Ok(Some(contents)) => {
-                return Ok(ReadResourceResult::new(vec![contents]).into());
+                return Ok(ReadResourceResult::new(vec![contents])
+                    .with_ttl_ms(0)
+                    .with_cache_scope(CacheScope::Private)
+                    .into());
             }
             Ok(None) => {}
             Err(error) => {
@@ -287,7 +294,10 @@ impl ServerHandler for CodexHandler {
                 None,
             ));
         };
-        Ok(ReadResourceResult::new(vec![contents]).into())
+        Ok(ReadResourceResult::new(vec![contents])
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)
+            .into())
     }
 
     async fn call_tool(
