@@ -6,6 +6,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-09-17
+
+### Fixed
+
+- Include SEP-2549 cache metadata (`ttlMs: 0`, `cacheScope: private`) on
+  `tools/list`, `resources/list`, and `resources/read` responses. ChatGPT's
+  connector validation now requires these fields on resource results; without
+  them setup failed with a generic "Error creating connector" message. `ttlMs: 0`
+  preserves the existing no-cache behavior, and `cacheScope: private` reflects that
+  review-UI and exported-artifact resources are project- or conversation-specific.
+
 ## [1.9.0] - 2026-09-15
 
 ### Added
@@ -474,7 +485,8 @@ filename sort uses byte/Unicode ordering rather than `localeCompare`;
 `write_file` reports UTF-8 byte counts; `exec_command` uses plain pipes, not a
 PTY. See the README's "Notes on the port" for the full list.
 
-[Unreleased]: https://github.com/hypnguyen1209/codex-free/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/hypnguyen1209/codex-free/compare/v1.9.1...HEAD
+[1.9.1]: https://github.com/hypnguyen1209/codex-free/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/hypnguyen1209/codex-free/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/hypnguyen1209/codex-free/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/hypnguyen1209/codex-free/compare/v1.6.0...v1.7.0
