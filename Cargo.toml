@@ -1,6 +1,6 @@
 [package]
 name = "codex-free"
-version = "1.9.0"
+version = "1.9.1"
 edition = "2024"
 description = "Codex Free MCP bridge, ported to Rust: a local Streamable-HTTP MCP server exposing Codex-style agent tools over a chosen work directory."
 license = "MIT"
